@@ -1,1 +1,2 @@
-# llm_engineering
+# LLM Engineering
+Building LLM apps
