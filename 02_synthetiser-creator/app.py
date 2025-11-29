@@ -1,9 +1,13 @@
 import os
 import json
 import requests
+import asyncio
 from dotenv import load_dotenv
 from IPython.display import Markdown, display, update_display
-from scraper import fetch_website_links, fetch_website_contents, scrape_site
+from scraper import scrape_multiple_sites
+from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
 from openai import OpenAI
 
 
@@ -15,7 +19,7 @@ search_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
 openai = OpenAI()
 MODEL = 'gpt-5-nano'
 
-query = "how to build simple AI agent with python"
+
 
 def google_search(query, api_key, search_engine_id, num_results=10):
     """
@@ -40,6 +44,13 @@ def google_search(query, api_key, search_engine_id, num_results=10):
     data = response.json()
     return data
 
+query = "how to build simple AI agent with python"
+search_results = {}
+search_results = google_search(
+    query=query,
+    api_key=api_key_search,
+    search_engine_id=search_engine_id
+    )
 
 
 # I want to construct the list of links for the user prompt
@@ -109,4 +120,91 @@ def select_relevant_links():
     # json.loads turns JSON formatted text into python dictionaries
     links = json.loads(result)
     return links
+
+relevant_links = select_relevant_links()
+
+urls = []
+for link in relevant_links['links']:
+    print(link['url'])
+    urls.append(link['url'])
+
+scrape_results = asyncio.run(scrape_multiple_sites(urls))
+
+
+def text_parser(results):
+    web_contents = {"contents": []}
+    link_content = {}
+    for result in results:
+        soup = BeautifulSoup(result[2], 'html.parser')
+        for element in soup(["script", "style", "img", "input"]):
+            element.decompose()
+        text = soup.get_text(separator="\n", strip=True)
+        link_content["url"] = result[0]
+        link_content["title"] = result[1]
+        link_content["content"] = text[:2000]
+        web_contents["contents"].append(link_content)
+        link_content = {}
+    return web_contents
+
+text_parser(scrape_results)["contents"][0]
+
+
+# create new system prompt for the guide creation
+
+guide_system_prompt = """
+You are provided with a list of relevant search results in a form of url, title and content of the website.
+The list will be provided in this format:
+
+{
+    "contents": [
+        {"url": "https://full.url/here/", "title": "webpage title", "content": "content of the website"}, 
+        {"url": "https://another.full.url/here/", "title": "webpage title", "content": "content of the website"}
+    ]
+}
+You are able to create a brief study material for beginners for the topic you will be provided.
+
+Please create a brief study material which will help beginners to start learning the topic. It is not a comprehensive material but
+it should help students at the start of their journey and motivate them to continue and stay ont the track during the first days.
+Please also give students useful tips how to stay motivated. 
+
+"""
+
+
+# create user prompt for the guide creation
+
+# present a query as a JSON to an LLM
+query = {"topic": query}
+
+def get_guide_prompt(resources):
+    guide_user_prompt = f"""
+    You are experienced tutor and creator of the various studying and teaching materials.
+
+    Please create a brief study material which will help beginners to start learning the following topic:
+    {query} 
+    It is not a comprehensive material but it should help students at the start of their journey and motivate them to continue 
+    and stay ont the track during the first days. Please also give students useful tips how to stay motivated.
+
+    Here are the relevant resources you have available for the task:
+    {text_parser(resources)} 
+    """
+    return guide_user_prompt
+
+
+def get_guide():
+    response = openai.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": guide_system_prompt},
+            {"role": "user", "content": get_guide_prompt(scrape_results)}
+        ]
+    )
+    result = response.choices[0].message.content
+    return result
+
+
+guide = get_guide()
+
+display(Markdown(guide))
+
+
 
